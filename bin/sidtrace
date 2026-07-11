@@ -1,0 +1,31 @@
+#!/bin/sh
+# sidtrace OUTPUT.csv.zst TUNE.sid [extra sidplayfp args...]
+#
+# Renders TUNE.sid headlessly (no sound card) while streaming a
+# zstd-compressed CSV of register-changing SID writes to OUTPUT.csv.zst.
+# Defaults to 60 seconds of emulation unless a -t option is supplied.
+set -eu
+
+if [ "$#" -lt 2 ]; then
+    echo "usage: sidtrace OUTPUT.csv.zst TUNE.sid [sidplayfp args...]" >&2
+    echo "       (set a time limit with -t<secs>; default 60)" >&2
+    exit 2
+fi
+
+out=$1
+tune=$2
+shift 2
+
+# Default the render length unless the caller passed their own -t.
+timeopt="-t60"
+for arg in "$@"; do
+    case "$arg" in
+        -t*) timeopt="" ;;
+    esac
+done
+
+wav=$(mktemp)
+trap 'rm -f "$wav"' EXIT
+
+SIDTRACE="$out" sidplayfp -w"$wav" $timeopt "$@" "$tune"
+echo "wrote $out" >&2
