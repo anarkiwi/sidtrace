@@ -37,10 +37,11 @@ RUN git clone -q https://github.com/libsidplayfp/libsidplayfp.git /src/libsidpla
     cd /src/libsidplayfp && git checkout -q "${LIBSIDPLAYFP_SHA}" && \
     git submodule update --init --recursive
 
-# COPY the patch as late as possible so editing it does not bust the dep cache.
-COPY patches/0001-sid-write-trace.patch /src/
+# COPY the patches as late as possible so editing them does not bust the dep cache.
+COPY patches/ /src/patches/
 RUN cd /src/libsidplayfp && \
-    git apply --verbose /src/0001-sid-write-trace.patch && \
+    git apply --verbose /src/patches/0001-sid-write-trace.patch && \
+    git apply --verbose /src/patches/0002-deterministic-power-on-delay.patch && \
     autoreconf -fi && ./configure --prefix=/usr/local && make && make install
 
 # ---- 3. sidplayfp frontend (unmodified) -------------------------------------

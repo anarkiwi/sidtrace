@@ -1,0 +1,27 @@
+diff --git a/src/player.cpp b/src/player.cpp
+index c887043..d9f568b 100644
+--- a/src/player.cpp
++++ b/src/player.cpp
+@@ -78,7 +78,9 @@ Player::Player() :
+     // Set default settings for system
+     m_tune(nullptr),
+     m_errorString(ERR_NA),
+-    m_rand((unsigned int)std::time(nullptr))
++    // sidtrace: seed the PRNG deterministically (not from wall-clock time) so
++    // every trace of a given tune is byte-for-byte reproducible.
++    m_rand(0)
+ {
+     // We need at least some minimal interrupt handling
+     m_c64.getMemInterface().setKernal(nullptr);
+@@ -136,8 +138,9 @@ void Player::initialise()
+     uint_least16_t powerOnDelay = m_cfg.powerOnDelay;
+     // Delays above MAX result in random delays
+     if (powerOnDelay > SidConfig::MAX_POWER_ON_DELAY)
+-    {   // Limit the delay to something sensible.
+-        powerOnDelay = (uint_least16_t)((m_rand.next() >> 3) & SidConfig::MAX_POWER_ON_DELAY);
++    {   // sidtrace: a random power-on delay makes the boot phase (and thus the
++        // whole SID trace) differ run to run; pin it to a fixed value instead.
++        powerOnDelay = SidConfig::MAX_POWER_ON_DELAY;
+     }
+ 
+     powerOnDelay += 8000;
