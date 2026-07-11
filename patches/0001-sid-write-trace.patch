@@ -1,0 +1,439 @@
+diff --git a/Makefile.am b/Makefile.am
+index 0a5b033..9892502 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -93,6 +93,7 @@ src/c64/c64cia.h \
+ src/c64/c64env.h \
+ src/c64/c64sid.h \
+ src/c64/c64vic.h \
++src/sidtrace.h \
+ src/c64/c64.cpp \
+ src/c64/c64.h \
+ src/c64/mmu.cpp \
+@@ -173,11 +174,13 @@ src/sidplayfp/sidversion.h
+ 
+ src_libsidplayfp_la_CPPFLAGS = \
+ $(LIBGCRYPT_CFLAGS) \
++$(ZSTD_CFLAGS) \
+ $(AM_CPPFLAGS)
+ 
+ src_libsidplayfp_la_LIBADD = \
+ src/builders/sidlite-builder/libsidplayfp-sidlite.la \
+-$(LIBGCRYPT_LIBS)
++$(LIBGCRYPT_LIBS) \
++$(ZSTD_LIBS)
+ 
+ if RESIDFP_SUPPORT
+   src_libsidplayfp_la_LIBADD += src/builders/residfp-builder/libsidplayfp-residfp.la 
+diff --git a/configure.ac b/configure.ac
+index d8b9337..51a9d8b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -198,6 +198,9 @@ PKG_CHECK_MODULES([RESIDFP],
+     [AC_MSG_WARN([$RESIDFP_PKG_ERRORS])]
+ )
+ 
++# SID write tracer (sidtrace) needs zstd for compressed CSV output
++PKG_CHECK_MODULES([ZSTD], [libzstd >= 1.4.0])
++
+ AM_CONDITIONAL([RESIDFP_SUPPORT], [ test "x$pkg_cv_RESIDFP_LIBS" != x ])
+ 
+ AC_SUBST(HAVE_BUILTIN_EXPECT)
+diff --git a/src/c64/c64.cpp b/src/c64/c64.cpp
+index b96881a..dc9d171 100644
+--- a/src/c64/c64.cpp
++++ b/src/c64/c64.cpp
+@@ -22,6 +22,8 @@
+ 
+ #include "c64.h"
+ 
++#include <cstdlib>
++
+ #include "c64/CIA/mos652x.h"
+ #include "c64/VIC_II/mos656x.h"
+ 
+@@ -86,7 +88,9 @@ c64::c64() :
+     disconnectedBusBank(mmu),
+     mmu(eventScheduler, &ioBank),
+     cpubus(mmu),
+-    cpu(eventScheduler, cpubus)
++    cpu(eventScheduler, cpubus),
++    tracePath(std::getenv("SIDTRACE")),
++    traceChips(0)
+ {
+     resetIoBank();
+ }
+@@ -115,6 +119,8 @@ void c64::reset()
+ {
+     eventScheduler.reset();
+ 
++    if (trace) trace->resetInterrupts();
++
+     //cpu.reset();
+     cia1.reset();
+     cia2.reset();
+@@ -149,6 +155,16 @@ void c64::setCiaModel(cia_model_t model)
+ void c64::setBaseSid(c64sid *s)
+ {
+     sidBank.setSID(s);
++
++    if ((tracePath != nullptr) && (s != nullptr))
++    {
++        trace.reset(new SidTrace(tracePath));
++        if (!trace->ok())
++            trace.reset();
++        traceChips = 0;
++        if (trace)
++            s->enableTrace(trace.get(), &eventScheduler, 0);
++    }
+ }
+ 
+ bool c64::addExtraSid(c64sid *s, int address)
+@@ -179,6 +195,9 @@ bool c64::addExtraSid(c64sid *s, int address)
+         extraSidBank->addSID(s, address);
+     }
+ 
++    if (trace && (s != nullptr))
++        s->enableTrace(trace.get(), &eventScheduler, ++traceChips);
++
+     return true;
+ }
+ 
+diff --git a/src/c64/c64.h b/src/c64/c64.h
+index e8066dd..430153d 100644
+--- a/src/c64/c64.h
++++ b/src/c64/c64.h
+@@ -27,6 +27,9 @@
+ #include <cstdio>
+ 
+ #include <map>
++#include <memory>
++
++#include "sidtrace.h"
+ 
+ #include "Banks/IOBank.h"
+ #include "Banks/ColorRAMBank.h"
+@@ -137,6 +140,11 @@ private:
+     /// CPU
+     MOS6510 cpu;
+ 
++    /// SID write tracer (null unless the SIDTRACE env var is set)
++    const char *tracePath;
++    std::unique_ptr<SidTrace> trace;
++    int traceChips;
++
+ private:
+     static double getCpuFreq(model_t model);
+ 
+@@ -150,14 +158,18 @@ private:
+      *
+      * @param state
+      */
+-    inline void interruptIRQ(bool state) override;
++    inline void interruptIRQ(bool state, irq_source_t source) override;
+ 
+     /**
+      * NMI trigger signal.
+      *
+      * Calls permitted any time, but normally originated by chips at PHI1.
+      */
+-    inline void interruptNMI() override { cpu.triggerNMI(); }
++    inline void interruptNMI() override
++    {
++        if (trace) trace->markInterrupt(SidTrace::NMI, eventScheduler.getTime(EVENT_CLOCK_PHI1));
++        cpu.triggerNMI();
++    }
+ 
+     /**
+      * Reset signal.
+@@ -262,10 +274,14 @@ public:
+     uint_least16_t getCia1TimerA() const { return cia1.getTimerA(); }
+ };
+ 
+-void c64::interruptIRQ(bool state)
++void c64::interruptIRQ(bool state, irq_source_t source)
+ {
+     if (state)
+     {
++        if (trace)
++            trace->markInterrupt(source == IRQ_VIC ? SidTrace::VIDEO_IRQ : SidTrace::CIA_IRQ,
++                eventScheduler.getTime(EVENT_CLOCK_PHI1));
++
+         if (irqCount == 0)
+             cpu.triggerIRQ();
+ 
+diff --git a/src/c64/c64cia.h b/src/c64/c64cia.h
+index 5e752f8..2236fec 100644
+--- a/src/c64/c64cia.h
++++ b/src/c64/c64cia.h
+@@ -52,7 +52,7 @@ private:
+ protected:
+     void interrupt(bool state) override
+     {
+-        m_env.interruptIRQ(state);
++        m_env.interruptIRQ(state, c64env::IRQ_CIA);
+     }
+ 
+     void portB() override
+diff --git a/src/c64/c64env.h b/src/c64/c64env.h
+index 6dea2f6..24b086f 100644
+--- a/src/c64/c64env.h
++++ b/src/c64/c64env.h
+@@ -39,6 +39,10 @@ namespace libsidplayfp
+  */
+ class c64env
+ {
++public:
++    /// IRQ line sources, reported so writes can be timed against each.
++    enum irq_source_t { IRQ_CIA = 0, IRQ_VIC = 1 };
++
+ private:
+     EventScheduler &eventScheduler;
+ 
+@@ -48,7 +52,7 @@ public:
+ 
+     EventScheduler &scheduler() const { return eventScheduler; }
+ 
+-    virtual void interruptIRQ(bool state) = 0;
++    virtual void interruptIRQ(bool state, irq_source_t source) = 0;
+     virtual void interruptNMI() = 0;
+     virtual void interruptRST() = 0;
+ 
+diff --git a/src/c64/c64sid.h b/src/c64/c64sid.h
+index 6e4a6b4..5e7b894 100644
+--- a/src/c64/c64sid.h
++++ b/src/c64/c64sid.h
+@@ -23,6 +23,9 @@
+ 
+ #include "Banks/Bank.h"
+ 
++#include "EventScheduler.h"
++#include "sidtrace.h"
++
+ #include "sidcxx11.h"
+ 
+ #include <algorithm>
+@@ -41,6 +44,11 @@ class c64sid : public Bank
+ private:
+     uint8_t lastpoke[0x20];
+ 
++    // SID write tracing (disabled unless a trace is attached)
++    SidTrace *m_trace = nullptr;
++    EventScheduler *m_traceScheduler = nullptr;
++    int m_traceChip = 0;
++
+ protected:
+     virtual ~c64sid() = default;
+ 
+@@ -59,12 +67,23 @@ public:
+     // Bank functions
+     void poke(uint_least16_t address, uint8_t value) override
+     {
+-        lastpoke[address & 0x1f] = value;
+-        writeReg(address & 0x1f, value);
++        const uint_least8_t reg = address & 0x1f;
++        if ((m_trace != nullptr) && (value != lastpoke[reg]))
++            m_trace->write(m_traceChip, m_traceScheduler->getTime(EVENT_CLOCK_PHI1), reg, value);
++        lastpoke[reg] = value;
++        writeReg(reg, value);
+     }
+     uint8_t peek(uint_least16_t address) override { return read(address & 0x1f); }
+ 
+     void getStatus(uint8_t regs[0x20]) const { std::memcpy(regs, lastpoke, 0x20); }
++
++    /// Attach a SID write tracer to this chip.
++    void enableTrace(SidTrace *trace, EventScheduler *scheduler, int chip)
++    {
++        m_trace = trace;
++        m_traceScheduler = scheduler;
++        m_traceChip = chip;
++    }
+ };
+ 
+ }
+diff --git a/src/c64/c64vic.h b/src/c64/c64vic.h
+index c46d47a..d762435 100644
+--- a/src/c64/c64vic.h
++++ b/src/c64/c64vic.h
+@@ -49,7 +49,7 @@ private:
+ protected:
+     void interrupt(bool state) override
+     {
+-        m_env.interruptIRQ(state);
++        m_env.interruptIRQ(state, c64env::IRQ_VIC);
+     }
+ 
+     void setBA(bool state) override
+diff --git a/src/sidtrace.h b/src/sidtrace.h
+new file mode 100644
+index 0000000..b1affe8
+--- /dev/null
++++ b/src/sidtrace.h
+@@ -0,0 +1,167 @@
++/*
++ * This file is part of libsidplayfp, a SID player engine.
++ *
++ * SID write tracer: streams a zstd-compressed CSV of every SID register
++ * write that changes a register, annotated with cycle counts.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef SIDTRACE_H
++#define SIDTRACE_H
++
++#include "Event.h" // event_clock_t
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include <zstd.h>
++
++namespace libsidplayfp
++{
++
++/**
++ * Streams a zstd-compressed CSV log of SID register writes.
++ *
++ * Columns: cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value
++ *   cycle                  - PHI1 cycles since the last C64 reset ("boot")
++ *   cycle_since_nmi        - cycles since the last NMI was raised (empty if none)
++ *   cycle_since_video_irq  - cycles since the last VIC (raster) IRQ (empty if none)
++ *   cycle_since_cia_irq    - cycles since the last CIA (timer) IRQ (empty if none)
++ *   chip                   - SID index (0 = base $D400, 1 = second SID, ...)
++ *   reg                    - register offset 0..31
++ *   value                  - byte written
++ *
++ * Header-only so the fork adds no source-list changes to the build.
++ */
++class SidTrace
++{
++public:
++    /// Interrupt sources tracked for the delta columns.
++    enum interrupt_t { NMI = 0, VIDEO_IRQ = 1, CIA_IRQ = 2, NUM_INTERRUPTS = 3 };
++
++private:
++    static const size_t FLUSH_THRESHOLD = 1u << 16;
++
++    FILE *m_fp = nullptr;
++    ZSTD_CCtx *m_cctx = nullptr;
++    std::vector<char> m_outbuf;
++    std::string m_raw;
++
++    event_clock_t m_last[NUM_INTERRUPTS] = {0, 0, 0};
++    bool m_have[NUM_INTERRUPTS] = {false, false, false};
++    bool m_ok = false;
++
++    void compress(bool end)
++    {
++        if (!m_ok)
++            return;
++
++        ZSTD_inBuffer in { m_raw.data(), m_raw.size(), 0 };
++        const ZSTD_EndDirective mode = end ? ZSTD_e_end : ZSTD_e_continue;
++        for (;;)
++        {
++            ZSTD_outBuffer out { m_outbuf.data(), m_outbuf.size(), 0 };
++            const size_t rem = ZSTD_compressStream2(m_cctx, &out, &in, mode);
++            if (ZSTD_isError(rem))
++            {
++                m_ok = false;
++                return;
++            }
++            if (out.pos != 0)
++                std::fwrite(m_outbuf.data(), 1, out.pos, m_fp);
++            if (end ? (rem == 0) : (in.pos == in.size))
++                break;
++        }
++        m_raw.clear();
++    }
++
++public:
++    explicit SidTrace(const char *path) :
++        m_outbuf(ZSTD_CStreamOutSize())
++    {
++        m_fp = std::fopen(path, "wb");
++        if (m_fp == nullptr)
++            return;
++
++        m_cctx = ZSTD_createCCtx();
++        if (m_cctx == nullptr)
++        {
++            std::fclose(m_fp);
++            m_fp = nullptr;
++            return;
++        }
++
++        ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_compressionLevel, 3);
++        m_ok = true;
++        m_raw = "cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value\n";
++    }
++
++    ~SidTrace()
++    {
++        if (m_ok)
++            compress(true);
++        if (m_cctx != nullptr)
++            ZSTD_freeCCtx(m_cctx);
++        if (m_fp != nullptr)
++            std::fclose(m_fp);
++    }
++
++    SidTrace(const SidTrace &) = delete;
++    SidTrace &operator=(const SidTrace &) = delete;
++
++    bool ok() const { return m_ok; }
++
++    /// Record the cycle at which an interrupt line was raised.
++    void markInterrupt(interrupt_t kind, event_clock_t cycle)
++    {
++        m_last[kind] = cycle;
++        m_have[kind] = true;
++    }
++
++    /// Clear interrupt history (called on C64 reset).
++    void resetInterrupts()
++    {
++        for (int i = 0; i < NUM_INTERRUPTS; ++i)
++        {
++            m_last[i] = 0;
++            m_have[i] = false;
++        }
++    }
++
++    /// Append a CSV row for a register-changing write.
++    void write(int chip, event_clock_t cycle, uint8_t reg, uint8_t value)
++    {
++        if (!m_ok)
++            return;
++
++        char delta[NUM_INTERRUPTS][24];
++        for (int i = 0; i < NUM_INTERRUPTS; ++i)
++        {
++            if (m_have[i])
++                std::snprintf(delta[i], sizeof(delta[i]), "%lld",
++                    static_cast<long long>(cycle - m_last[i]));
++            else
++                delta[i][0] = '\0';
++        }
++
++        char buf[128];
++        const int n = std::snprintf(buf, sizeof(buf), "%lld,%s,%s,%s,%d,%u,%u\n",
++            static_cast<long long>(cycle), delta[NMI], delta[VIDEO_IRQ], delta[CIA_IRQ],
++            chip, static_cast<unsigned>(reg), static_cast<unsigned>(value));
++        m_raw.append(buf, n);
++
++        if (m_raw.size() >= FLUSH_THRESHOLD)
++            compress(false);
++    }
++};
++
++}
++
++#endif // SIDTRACE_H

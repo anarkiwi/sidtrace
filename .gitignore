@@ -1,0 +1,7 @@
+*.csv.zst
+*.csv
+*.wav
+test.sid
+__pycache__/
+*.pyc
+.smoke/
