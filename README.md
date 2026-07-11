@@ -37,6 +37,10 @@ your own and pass `--kernal/--basic/--chargen` if a tune needs them.
 CSV columns: `cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value`.
 Unchanged writes are omitted. Full spec: [docs/csv-format.md](docs/csv-format.md).
 
+Traces are **deterministic**: the simulated power-on delay is pinned (not
+randomized from wall-clock time), so a given tune renders to a byte-identical
+trace every run, making it usable as a byte-exact oracle.
+
 ```python
 import pandas as pd
 df = pd.read_csv("trace.csv.zst")
@@ -46,5 +50,5 @@ df = pd.read_csv("trace.csv.zst")
 
 - [docs/design.md](docs/design.md) — how the fork is structured and maintained.
 - [docs/csv-format.md](docs/csv-format.md) — trace column reference.
-- [patches/](patches) — the upstream patch.
+- [patches/](patches) — the upstream patches.
 - [tools/make_test_sid.py](tools/make_test_sid.py) — generates the CI smoke-test tune.

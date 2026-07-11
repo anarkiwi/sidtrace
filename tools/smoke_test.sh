@@ -15,6 +15,12 @@ csv="$DIR/trace.csv.zst"
 [ -s "$csv" ] || { echo "FAIL: no trace produced"; exit 1; }
 
 out=$(zstd -dc "$csv")
+
+# Determinism: a second render of the same tune must produce a byte-identical
+# trace (the power-on delay is pinned, not randomized from wall-clock time).
+docker run --rm -v "$DIR:/work" "$IMAGE" trace2.csv.zst test.sid -t5
+out2=$(zstd -dc "$DIR/trace2.csv.zst")
+[ "$out" = "$out2" ] || { echo "FAIL: trace not reproducible across runs"; exit 1; }
 header="cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value"
 
 echo "$out" | head -1 | grep -qx "$header" || { echo "FAIL: bad header"; exit 1; }
@@ -30,4 +36,4 @@ vol=$(echo "$out" | tail -n +2 | awk -F, '$6==24 && $7==15' | grep -c . || true)
 irq=$(echo "$out" | tail -n +2 | awk -F, '$3!="" || $4!=""' | grep -c . || true)
 [ "$irq" -gt 0 ] || { echo "FAIL: no IRQ deltas recorded"; exit 1; }
 
-echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing"
+echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing, reproducible"

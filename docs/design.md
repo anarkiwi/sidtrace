@@ -7,11 +7,16 @@ Add a "trace every changing SID write, with cycle/interrupt timing" feature to
 
 ## Maintenance model
 
-The fork is a **single patch** (`patches/0001-sid-write-trace.patch`) applied to
-a pinned upstream `libsidplayfp` commit during the Docker build. The `sidplayfp`
-frontend and the `libresidfp` engine are built **unmodified** from pinned
-commits. To follow upstream, bump the `*_SHA` build args in the `Dockerfile`
-and, if the patch no longer applies, refresh it.
+The fork is two small patches applied to a pinned upstream `libsidplayfp` commit
+during the Docker build:
+
+- `patches/0001-sid-write-trace.patch` — the SID write tracer itself.
+- `patches/0002-deterministic-power-on-delay.patch` — pins the simulated
+  power-on delay so traces are reproducible (see below).
+
+The `sidplayfp` frontend and the `libresidfp` engine are built **unmodified**
+from pinned commits. To follow upstream, bump the `*_SHA` build args in the
+`Dockerfile` and, if a patch no longer applies, refresh it.
 
 Upstream revisions are pinned via `Dockerfile` build args:
 
@@ -35,6 +40,19 @@ CLI/config/public-API surface changes are needed.
 
 The tracer pointer is null unless `$SIDTRACE` is set, so an un-traced run keeps
 the original hot-path cost (one extra null-pointer test per write).
+
+## Deterministic traces
+
+Upstream `libsidplayfp` seeds its PRNG from `std::time(nullptr)` and, when the
+configured power-on delay exceeds `SidConfig::MAX_POWER_ON_DELAY` (the default),
+draws a **random** delay before the tune runs. That delay shifts the whole boot
+phase relative to the VIC and CIA interrupts, so every run of the same tune
+produces a different trace — fatal for using the trace as a byte-exact oracle.
+
+`patches/0002-deterministic-power-on-delay.patch` seeds the PRNG with a constant
+and pins the random-delay branch to a fixed value, so a given tune renders to a
+byte-identical trace every time. `tools/smoke_test.sh` renders twice and asserts
+the traces are equal.
 
 ## Why the environment variable
 
