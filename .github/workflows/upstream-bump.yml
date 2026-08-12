@@ -1,0 +1,77 @@
+name: upstream-bump
+
+on:
+  schedule:
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: check upstream default branches
+        id: up
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          changed=false
+          for pair in \
+            "LIBRESIDFP_SHA:libsidplayfp/libresidfp" \
+            "LIBSIDPLAYFP_SHA:libsidplayfp/libsidplayfp" \
+            "SIDPLAYFP_SHA:libsidplayfp/sidplayfp"; do
+            arg=${pair%%:*}
+            repo=${pair#*:}
+            branch=$(gh api "repos/${repo}" -q .default_branch)
+            sha=$(gh api "repos/${repo}/commits/${branch}" -q .sha)
+            case "${sha}" in ''|null) echo "cannot resolve ${repo}" >&2; exit 1;; esac
+            current=$(sed -n "s/^ARG ${arg}=//p" Dockerfile)
+            [ "${sha}" = "${current}" ] || changed=true
+            sed -i "s|^ARG ${arg}=.*|ARG ${arg}=${sha}|" Dockerfile
+            echo "${repo}@${branch}: ${current} -> ${sha}"
+            if [ "${arg}" = SIDPLAYFP_SHA ]; then
+              echo "short=$(echo "${sha}" | cut -c1-8)" >> "${GITHUB_OUTPUT}"
+            fi
+          done
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
+
+      # PRs opened with GITHUB_TOKEN do not start workflow runs, so the new pins
+      # are built and tested here instead of on the pull request. This is also
+      # where a patch in patches/ that no longer applies shows up.
+      - uses: docker/setup-buildx-action@v4
+        if: steps.up.outputs.changed == 'true'
+
+      - name: build
+        if: steps.up.outputs.changed == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: sidtrace:bump
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: smoke test
+        if: steps.up.outputs.changed == 'true'
+        run: ./tools/smoke_test.sh sidtrace:bump
+
+      - name: open pull request
+        if: steps.up.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: upstream-${{ steps.up.outputs.short }}
+          commit-message: "upstream sidplayfp ${{ steps.up.outputs.short }}"
+          title: "upstream sidplayfp ${{ steps.up.outputs.short }}"
+          body: |
+            Pin the current default branch head of libresidfp, libsidplayfp and
+            sidplayfp.
+
+            Built, patched and smoke tested in
+            [this run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }});
+            `ci` does not run on pull requests opened by `GITHUB_TOKEN`.
+          delete-branch: true
