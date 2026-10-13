@@ -266,10 +266,10 @@ index c46d47a0..d762435e 100644
      void setBA(bool state) override
 diff --git a/src/sidtrace.h b/src/sidtrace.h
 new file mode 100644
-index 00000000..acc1a881
+index 00000000..b4e69ed3
 --- /dev/null
 +++ b/src/sidtrace.h
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,180 @@
 +/*
 + * This file is part of libsidplayfp, a SID player engine.
 + *
@@ -289,7 +289,6 @@ index 00000000..acc1a881
 +
 +#include <cstdint>
 +#include <cstdio>
-+#include <cstdlib>
 +#include <cstring>
 +#include <string>
 +#include <vector>
@@ -302,8 +301,8 @@ index 00000000..acc1a881
 +/**
 + * Streams a zstd-compressed CSV log of SID register writes.
 + *
-+ * With SIDTRACE_INTERRUPTS set, every interrupt raise is also logged as a row
-+ * with empty chip and reg and value nmi, video_irq or cia_irq.
++ * Every interrupt raise is also logged, as a row with empty chip and reg and
++ * value nmi, video_irq or cia_irq.
 + *
 + * Columns: cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value
 + *   cycle                  - PHI1 cycles since the last C64 reset ("boot")
@@ -333,7 +332,6 @@ index 00000000..acc1a881
 +    event_clock_t m_last[NUM_INTERRUPTS] = {0, 0, 0};
 +    bool m_have[NUM_INTERRUPTS] = {false, false, false};
 +    bool m_ok = false;
-+    bool m_interrupts = false;
 +
 +    void compress(bool end)
 +    {
@@ -402,7 +400,6 @@ index 00000000..acc1a881
 +
 +        ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_compressionLevel, 3);
 +        m_ok = true;
-+        m_interrupts = std::getenv("SIDTRACE_INTERRUPTS") != nullptr;
 +        m_raw = "cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value\n";
 +    }
 +
@@ -427,8 +424,7 @@ index 00000000..acc1a881
 +        static const char *const names[NUM_INTERRUPTS] = {",,nmi", ",,video_irq", ",,cia_irq"};
 +        m_last[kind] = cycle;
 +        m_have[kind] = true;
-+        if (m_interrupts)
-+            row(cycle, names[kind]);
++        row(cycle, names[kind]);
 +    }
 +
 +    /// Clear interrupt history (called on C64 reset).
