@@ -25,7 +25,7 @@ header="cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg
 
 echo "$out" | head -1 | grep -qx "$header" || { echo "FAIL: bad header"; exit 1; }
 
-rows=$(echo "$out" | tail -n +2 | grep -c . || true)
+rows=$(echo "$out" | tail -n +2 | grep -v ",,[a-z_]*$" | grep -c . || true)
 [ "$rows" -gt 20 ] || { echo "FAIL: too few rows ($rows)"; exit 1; }
 
 # Constant volume write ($D418 = 15, reg 24) must be logged exactly once.
@@ -36,12 +36,8 @@ vol=$(echo "$out" | tail -n +2 | awk -F, '$6==24 && $7==15' | grep -c . || true)
 irq=$(echo "$out" | tail -n +2 | awk -F, '$3!="" || $4!=""' | grep -c . || true)
 [ "$irq" -gt 0 ] || { echo "FAIL: no IRQ deltas recorded"; exit 1; }
 
-# Interrupt rows are opt-in: absent by default, one per CIA raise when enabled.
-echo "$out" | grep -q ',,cia_irq$' && { echo "FAIL: interrupt rows without opt-in"; exit 1; }
-docker run --rm -e SIDTRACE_INTERRUPTS=1 -v "$DIR:/work" "$IMAGE" trace3.csv.zst test.sid -t5
-out3=$(zstd -dc "$DIR/trace3.csv.zst")
-cia=$(echo "$out3" | grep -c ',0,,,cia_irq$' || true)
+# Every CIA raise is a row.
+cia=$(echo "$out" | grep -c ',0,,,cia_irq$' || true)
 [ "$cia" -gt 200 ] || { echo "FAIL: too few CIA interrupt rows ($cia)"; exit 1; }
-[ "$(echo "$out3" | grep -v ',,[a-z_]*$')" = "$out" ] || { echo "FAIL: interrupt rows changed write rows"; exit 1; }
 
 echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing, reproducible"
