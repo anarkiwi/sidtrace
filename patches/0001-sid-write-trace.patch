@@ -1,5 +1,5 @@
 diff --git a/Makefile.am b/Makefile.am
-index 0a5b033..9892502 100644
+index 04f233bb..4147364f 100644
 --- a/Makefile.am
 +++ b/Makefile.am
 @@ -93,6 +93,7 @@ src/c64/c64cia.h \
@@ -26,10 +26,10 @@ index 0a5b033..9892502 100644
  if RESIDFP_SUPPORT
    src_libsidplayfp_la_LIBADD += src/builders/residfp-builder/libsidplayfp-residfp.la 
 diff --git a/configure.ac b/configure.ac
-index d8b9337..51a9d8b 100644
+index 7b7f1773..f67bf86a 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -198,6 +198,9 @@ PKG_CHECK_MODULES([RESIDFP],
+@@ -193,6 +193,9 @@ PKG_CHECK_MODULES([RESIDFP],
      [AC_MSG_WARN([$RESIDFP_PKG_ERRORS])]
  )
  
@@ -40,7 +40,7 @@ index d8b9337..51a9d8b 100644
  
  AC_SUBST(HAVE_BUILTIN_EXPECT)
 diff --git a/src/c64/c64.cpp b/src/c64/c64.cpp
-index b96881a..dc9d171 100644
+index b96881a8..dc9d1716 100644
 --- a/src/c64/c64.cpp
 +++ b/src/c64/c64.cpp
 @@ -22,6 +22,8 @@
@@ -100,7 +100,7 @@ index b96881a..dc9d171 100644
  }
  
 diff --git a/src/c64/c64.h b/src/c64/c64.h
-index e8066dd..430153d 100644
+index e8066dd7..430153dd 100644
 --- a/src/c64/c64.h
 +++ b/src/c64/c64.h
 @@ -27,6 +27,9 @@
@@ -163,7 +163,7 @@ index e8066dd..430153d 100644
              cpu.triggerIRQ();
  
 diff --git a/src/c64/c64cia.h b/src/c64/c64cia.h
-index 5e752f8..2236fec 100644
+index 5e752f89..2236fec9 100644
 --- a/src/c64/c64cia.h
 +++ b/src/c64/c64cia.h
 @@ -52,7 +52,7 @@ private:
@@ -176,7 +176,7 @@ index 5e752f8..2236fec 100644
  
      void portB() override
 diff --git a/src/c64/c64env.h b/src/c64/c64env.h
-index 6dea2f6..24b086f 100644
+index 6dea2f67..24b086fc 100644
 --- a/src/c64/c64env.h
 +++ b/src/c64/c64env.h
 @@ -39,6 +39,10 @@ namespace libsidplayfp
@@ -200,7 +200,7 @@ index 6dea2f6..24b086f 100644
      virtual void interruptRST() = 0;
  
 diff --git a/src/c64/c64sid.h b/src/c64/c64sid.h
-index 6e4a6b4..5e7b894 100644
+index 6e4a6b42..5e7b894f 100644
 --- a/src/c64/c64sid.h
 +++ b/src/c64/c64sid.h
 @@ -23,6 +23,9 @@
@@ -252,7 +252,7 @@ index 6e4a6b4..5e7b894 100644
  
  }
 diff --git a/src/c64/c64vic.h b/src/c64/c64vic.h
-index c46d47a..d762435 100644
+index c46d47a0..d762435e 100644
 --- a/src/c64/c64vic.h
 +++ b/src/c64/c64vic.h
 @@ -49,7 +49,7 @@ private:
@@ -266,10 +266,10 @@ index c46d47a..d762435 100644
      void setBA(bool state) override
 diff --git a/src/sidtrace.h b/src/sidtrace.h
 new file mode 100644
-index 0000000..b1affe8
+index 00000000..acc1a881
 --- /dev/null
 +++ b/src/sidtrace.h
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,184 @@
 +/*
 + * This file is part of libsidplayfp, a SID player engine.
 + *
@@ -289,6 +289,7 @@ index 0000000..b1affe8
 +
 +#include <cstdint>
 +#include <cstdio>
++#include <cstdlib>
 +#include <cstring>
 +#include <string>
 +#include <vector>
@@ -300,6 +301,9 @@ index 0000000..b1affe8
 +
 +/**
 + * Streams a zstd-compressed CSV log of SID register writes.
++ *
++ * With SIDTRACE_INTERRUPTS set, every interrupt raise is also logged as a row
++ * with empty chip and reg and value nmi, video_irq or cia_irq.
 + *
 + * Columns: cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value
 + *   cycle                  - PHI1 cycles since the last C64 reset ("boot")
@@ -329,6 +333,7 @@ index 0000000..b1affe8
 +    event_clock_t m_last[NUM_INTERRUPTS] = {0, 0, 0};
 +    bool m_have[NUM_INTERRUPTS] = {false, false, false};
 +    bool m_ok = false;
++    bool m_interrupts = false;
 +
 +    void compress(bool end)
 +    {
@@ -354,6 +359,31 @@ index 0000000..b1affe8
 +        m_raw.clear();
 +    }
 +
++    void row(event_clock_t cycle, const char *tail)
++    {
++        if (!m_ok)
++            return;
++
++        char delta[NUM_INTERRUPTS][24];
++        for (int i = 0; i < NUM_INTERRUPTS; ++i)
++        {
++            if (m_have[i])
++                std::snprintf(delta[i], sizeof(delta[i]), "%lld",
++                    static_cast<long long>(cycle - m_last[i]));
++            else
++                delta[i][0] = '\0';
++        }
++
++        char buf[128];
++        const int n = std::snprintf(buf, sizeof(buf), "%lld,%s,%s,%s,%s\n",
++            static_cast<long long>(cycle), delta[NMI], delta[VIDEO_IRQ], delta[CIA_IRQ],
++            tail);
++        m_raw.append(buf, n);
++
++        if (m_raw.size() >= FLUSH_THRESHOLD)
++            compress(false);
++    }
++
 +public:
 +    explicit SidTrace(const char *path) :
 +        m_outbuf(ZSTD_CStreamOutSize())
@@ -372,6 +402,7 @@ index 0000000..b1affe8
 +
 +        ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_compressionLevel, 3);
 +        m_ok = true;
++        m_interrupts = std::getenv("SIDTRACE_INTERRUPTS") != nullptr;
 +        m_raw = "cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value\n";
 +    }
 +
@@ -393,8 +424,11 @@ index 0000000..b1affe8
 +    /// Record the cycle at which an interrupt line was raised.
 +    void markInterrupt(interrupt_t kind, event_clock_t cycle)
 +    {
++        static const char *const names[NUM_INTERRUPTS] = {",,nmi", ",,video_irq", ",,cia_irq"};
 +        m_last[kind] = cycle;
 +        m_have[kind] = true;
++        if (m_interrupts)
++            row(cycle, names[kind]);
 +    }
 +
 +    /// Clear interrupt history (called on C64 reset).
@@ -410,27 +444,10 @@ index 0000000..b1affe8
 +    /// Append a CSV row for a register-changing write.
 +    void write(int chip, event_clock_t cycle, uint8_t reg, uint8_t value)
 +    {
-+        if (!m_ok)
-+            return;
-+
-+        char delta[NUM_INTERRUPTS][24];
-+        for (int i = 0; i < NUM_INTERRUPTS; ++i)
-+        {
-+            if (m_have[i])
-+                std::snprintf(delta[i], sizeof(delta[i]), "%lld",
-+                    static_cast<long long>(cycle - m_last[i]));
-+            else
-+                delta[i][0] = '\0';
-+        }
-+
-+        char buf[128];
-+        const int n = std::snprintf(buf, sizeof(buf), "%lld,%s,%s,%s,%d,%u,%u\n",
-+            static_cast<long long>(cycle), delta[NMI], delta[VIDEO_IRQ], delta[CIA_IRQ],
-+            chip, static_cast<unsigned>(reg), static_cast<unsigned>(value));
-+        m_raw.append(buf, n);
-+
-+        if (m_raw.size() >= FLUSH_THRESHOLD)
-+            compress(false);
++        char tail[32];
++        std::snprintf(tail, sizeof(tail), "%d,%u,%u", chip,
++            static_cast<unsigned>(reg), static_cast<unsigned>(value));
++        row(cycle, tail);
 +    }
 +};
 +

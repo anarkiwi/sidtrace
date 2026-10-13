@@ -29,5 +29,10 @@ is always present, so an all-silent run yields a header-only file.
   current play frame.
 - Video (VIC) and CIA IRQs are tracked separately because a tune may use either
   or both. A column stays empty until its source fires at least once.
+- **Interrupt rows.** With `SIDTRACE_INTERRUPTS` set in the environment
+  (`docker run -e SIDTRACE_INTERRUPTS=1 ...`), every interrupt raise is also a
+  row with empty `chip` and `reg` and `value` = `nmi`, `video_irq` or
+  `cia_irq`; its own delta column is `0`. A play call that changes no register
+  still shows its interrupt, so the play cadence is read directly.
 - Change detection uses the same per-register last-written cache the emulator
   already maintains, across all 32 register offsets.
