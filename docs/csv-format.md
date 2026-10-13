@@ -5,7 +5,7 @@ read directly, e.g. `pandas.read_csv("file.csv.zst")`.
 
 One row is emitted per SID register write **whose value differs from the last
 value written to that register** (unchanged writes are omitted), and one per
-interrupt raise. The header row
+interrupt raise, interrupt entry and RTI. The header row
 is always present, so an all-silent run yields a header-only file.
 
 | column | type | meaning |
@@ -16,7 +16,7 @@ is always present, so an all-silent run yields a header-only file.
 | `cycle_since_cia_irq` | int / empty | cycles since the last CIA (timer) IRQ; empty until the first |
 | `chip` | int | SID index: `0` = base `$D400`, `1` = second SID, `2` = third |
 | `reg` | int | register offset `0`–`31` |
-| `value` | int | byte written (`0`–`255`) |
+| `value` | int / name | byte written (`0`–`255`), or an interrupt event name |
 
 ## Semantics
 
@@ -34,5 +34,26 @@ is always present, so an all-silent run yields a header-only file.
   and `reg` and `value` = `nmi`, `video_irq` or `cia_irq`; its own delta
   column is `0`. A play call that changes no register still shows its
   interrupt, so frames are the interrupts themselves.
+- **Interrupt entry rows.** When the CPU commits to an interrupt sequence (the
+  cycle it pushes the return address low byte and picks the vector) it logs
+  `nmi_entry` (vector `$FFFA`), `video_irq_entry` or `cia_irq_entry` (a hardware
+  IRQ through `$FFFE`) or `brk_entry` (a `BRK` instruction through `$FFFE`).
+  An NMI that arrives before that cycle hijacks an IRQ or `BRK` sequence and is
+  logged as `nmi_entry`. An IRQ entry names the source that pulled the line
+  low: the earliest raise still asserting it, or the last source to assert it if
+  the line was released during the interrupt latency.
+- **Raise versus entry.** A raise is the line assertion; the entry follows it
+  after the current instruction completes (an NMI is edge-triggered and always
+  taken; an IRQ is level-triggered and held while the I flag is set, so it can
+  be entered long after its raise, e.g. after the running handler's `RTI`, or
+  never, if it is acknowledged first). A raise that arrives while another IRQ
+  source already holds the line is logged but causes no entry of its own.
+- **RTI rows.** Every `RTI` instruction is a row with value `rti`, logged before
+  the CPU checks for a pending interrupt, so an interrupt taken straight after
+  the return follows its `rti` row.
+- **Handler nesting.** Pushing each `*_entry` and popping on each `rti` rebuilds
+  the stack of running handlers; the innermost (top) one executes every write
+  until the next interrupt row. A `brk_entry` frame runs on behalf of the
+  context that executed the `BRK`.
 - Change detection uses the same per-register last-written cache the emulator
   already maintains, across all 32 register offsets.

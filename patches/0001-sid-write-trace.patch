@@ -39,8 +39,73 @@ index 7b7f1773..f67bf86a 100644
  AM_CONDITIONAL([RESIDFP_SUPPORT], [ test "x$pkg_cv_RESIDFP_LIBS" != x ])
  
  AC_SUBST(HAVE_BUILTIN_EXPECT)
+diff --git a/src/c64/CPU/mos6510.cpp b/src/c64/CPU/mos6510.cpp
+index 10bec1a1..ac10e4c1 100644
+--- a/src/c64/CPU/mos6510.cpp
++++ b/src/c64/CPU/mos6510.cpp
+@@ -22,6 +22,8 @@
+ 
+ #include "mos6510.h"
+ 
++#include "sidtrace.h"
++
+ #include "Event.h"
+ #include "sidendian.h"
+ 
+@@ -634,6 +636,10 @@ void MOS6510::brkPushLowPC()
+ {
+     PushLowPC();
+ 
++    if ((m_trace != nullptr) && !rstFlag)
++        m_trace->enterInterrupt(nmiFlag ? SidTrace::ENTER_NMI : (d1x1 ? SidTrace::ENTER_IRQ : SidTrace::ENTER_BRK),
++            eventScheduler.getTime(EVENT_CLOCK_PHI1));
++
+     if (rstFlag)
+     {
+         /* rst = %10x */
+@@ -694,6 +700,9 @@ void MOS6510::pha_instr()
+  */
+ void MOS6510::rti_instr()
+ {
++    if (m_trace != nullptr)
++        m_trace->returnFromInterrupt(eventScheduler.getTime(EVENT_CLOCK_PHI1));
++
+     Register_ProgramCounter = Cycle_EffectiveAddress;
+     interruptsAndNextOpcode();
+ 
+diff --git a/src/c64/CPU/mos6510.h b/src/c64/CPU/mos6510.h
+index 91fb40e6..5ffbc114 100644
+--- a/src/c64/CPU/mos6510.h
++++ b/src/c64/CPU/mos6510.h
+@@ -42,6 +42,7 @@ namespace libsidplayfp
+ {
+ 
+ class MOS6510;
++class SidTrace;
+ 
+ namespace MOS6510Debug
+ {
+@@ -122,6 +123,9 @@ private:
+     /// Event scheduler
+     EventScheduler &eventScheduler;
+ 
++    /// SID write tracer told of interrupt entries and returns (may be null)
++    SidTrace *m_trace = nullptr;
++
+     /// Data bus
+     CPUDataBus &dataBus;
+ 
+@@ -338,6 +342,8 @@ public:
+     void triggerNMI();
+     void triggerIRQ();
+     void clearIRQ();
++
++    void setTrace(SidTrace *trace) { m_trace = trace; }
+ };
+ 
+ }
 diff --git a/src/c64/c64.cpp b/src/c64/c64.cpp
-index b96881a8..dc9d1716 100644
+index b96881a8..2c6fefda 100644
 --- a/src/c64/c64.cpp
 +++ b/src/c64/c64.cpp
 @@ -22,6 +22,8 @@
@@ -72,7 +137,7 @@ index b96881a8..dc9d1716 100644
      //cpu.reset();
      cia1.reset();
      cia2.reset();
-@@ -149,6 +155,16 @@ void c64::setCiaModel(cia_model_t model)
+@@ -149,6 +155,17 @@ void c64::setCiaModel(cia_model_t model)
  void c64::setBaseSid(c64sid *s)
  {
      sidBank.setSID(s);
@@ -85,11 +150,12 @@ index b96881a8..dc9d1716 100644
 +        traceChips = 0;
 +        if (trace)
 +            s->enableTrace(trace.get(), &eventScheduler, 0);
++        cpu.setTrace(trace.get());
 +    }
  }
  
  bool c64::addExtraSid(c64sid *s, int address)
-@@ -179,6 +195,9 @@ bool c64::addExtraSid(c64sid *s, int address)
+@@ -179,6 +196,9 @@ bool c64::addExtraSid(c64sid *s, int address)
          extraSidBank->addSID(s, address);
      }
  
@@ -100,7 +166,7 @@ index b96881a8..dc9d1716 100644
  }
  
 diff --git a/src/c64/c64.h b/src/c64/c64.h
-index e8066dd7..430153dd 100644
+index e8066dd7..a4fb6d48 100644
 --- a/src/c64/c64.h
 +++ b/src/c64/c64.h
 @@ -27,6 +27,9 @@
@@ -162,6 +228,16 @@ index e8066dd7..430153dd 100644
          if (irqCount == 0)
              cpu.triggerIRQ();
  
+@@ -273,6 +289,9 @@ void c64::interruptIRQ(bool state)
+     }
+     else
+     {
++        if (trace)
++            trace->releaseInterrupt(source == IRQ_VIC ? SidTrace::VIDEO_IRQ : SidTrace::CIA_IRQ);
++
+         irqCount --;
+         if (irqCount == 0)
+              cpu.clearIRQ();
 diff --git a/src/c64/c64cia.h b/src/c64/c64cia.h
 index 5e752f89..2236fec9 100644
 --- a/src/c64/c64cia.h
@@ -266,10 +342,10 @@ index c46d47a0..d762435e 100644
      void setBA(bool state) override
 diff --git a/src/sidtrace.h b/src/sidtrace.h
 new file mode 100644
-index 00000000..b4e69ed3
+index 00000000..0ee89883
 --- /dev/null
 +++ b/src/sidtrace.h
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,213 @@
 +/*
 + * This file is part of libsidplayfp, a SID player engine.
 + *
@@ -301,8 +377,10 @@ index 00000000..b4e69ed3
 +/**
 + * Streams a zstd-compressed CSV log of SID register writes.
 + *
-+ * Every interrupt raise is also logged, as a row with empty chip and reg and
-+ * value nmi, video_irq or cia_irq.
++ * Interrupts are also logged as rows with empty chip and reg: a raise (line
++ * asserted) has value nmi, video_irq or cia_irq; the CPU's entry into a
++ * handler (vector chosen) has value nmi_entry, video_irq_entry, cia_irq_entry
++ * or brk_entry; every RTI has value rti.
 + *
 + * Columns: cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value
 + *   cycle                  - PHI1 cycles since the last C64 reset ("boot")
@@ -321,6 +399,9 @@ index 00000000..b4e69ed3
 +    /// Interrupt sources tracked for the delta columns.
 +    enum interrupt_t { NMI = 0, VIDEO_IRQ = 1, CIA_IRQ = 2, NUM_INTERRUPTS = 3 };
 +
++    /// Interrupt sequences the CPU vectors through.
++    enum entry_t { ENTER_NMI, ENTER_IRQ, ENTER_BRK };
++
 +private:
 +    static const size_t FLUSH_THRESHOLD = 1u << 16;
 +
@@ -331,6 +412,8 @@ index 00000000..b4e69ed3
 +
 +    event_clock_t m_last[NUM_INTERRUPTS] = {0, 0, 0};
 +    bool m_have[NUM_INTERRUPTS] = {false, false, false};
++    bool m_asserted[NUM_INTERRUPTS] = {false, false, false};
++    interrupt_t m_irqCause = CIA_IRQ;
 +    bool m_ok = false;
 +
 +    void compress(bool end)
@@ -424,8 +507,33 @@ index 00000000..b4e69ed3
 +        static const char *const names[NUM_INTERRUPTS] = {",,nmi", ",,video_irq", ",,cia_irq"};
 +        m_last[kind] = cycle;
 +        m_have[kind] = true;
++        if ((kind != NMI) && !m_asserted[VIDEO_IRQ] && !m_asserted[CIA_IRQ])
++            m_irqCause = kind;
++        m_asserted[kind] = true;
 +        row(cycle, names[kind]);
 +    }
++
++    /// Record an IRQ source releasing the line; a source still asserting it becomes the cause.
++    void releaseInterrupt(interrupt_t kind)
++    {
++        m_asserted[kind] = false;
++        const interrupt_t other = (kind == CIA_IRQ) ? VIDEO_IRQ : CIA_IRQ;
++        if (m_asserted[other])
++            m_irqCause = other;
++    }
++
++    /// Record the CPU vectoring to a handler; an IRQ is the source that pulled the line low.
++    void enterInterrupt(entry_t entry, event_clock_t cycle)
++    {
++        static const char *const names[NUM_INTERRUPTS] = {",,nmi_entry", ",,video_irq_entry", ",,cia_irq_entry"};
++        if (entry == ENTER_BRK)
++            row(cycle, ",,brk_entry");
++        else
++            row(cycle, names[entry == ENTER_NMI ? NMI : m_irqCause]);
++    }
++
++    /// Record an RTI.
++    void returnFromInterrupt(event_clock_t cycle) { row(cycle, ",,rti"); }
 +
 +    /// Clear interrupt history (called on C64 reset).
 +    void resetInterrupts()
@@ -434,6 +542,7 @@ index 00000000..b4e69ed3
 +        {
 +            m_last[i] = 0;
 +            m_have[i] = false;
++            m_asserted[i] = false;
 +        }
 +    }
 +
