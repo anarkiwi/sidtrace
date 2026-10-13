@@ -36,4 +36,12 @@ vol=$(echo "$out" | tail -n +2 | awk -F, '$6==24 && $7==15' | grep -c . || true)
 irq=$(echo "$out" | tail -n +2 | awk -F, '$3!="" || $4!=""' | grep -c . || true)
 [ "$irq" -gt 0 ] || { echo "FAIL: no IRQ deltas recorded"; exit 1; }
 
+# Interrupt rows are opt-in: absent by default, one per CIA raise when enabled.
+echo "$out" | grep -q ',,cia_irq$' && { echo "FAIL: interrupt rows without opt-in"; exit 1; }
+docker run --rm -e SIDTRACE_INTERRUPTS=1 -v "$DIR:/work" "$IMAGE" trace3.csv.zst test.sid -t5
+out3=$(zstd -dc "$DIR/trace3.csv.zst")
+cia=$(echo "$out3" | grep -c ',0,,,cia_irq$' || true)
+[ "$cia" -gt 200 ] || { echo "FAIL: too few CIA interrupt rows ($cia)"; exit 1; }
+[ "$(echo "$out3" | grep -v ',,[a-z_]*$')" = "$out" ] || { echo "FAIL: interrupt rows changed write rows"; exit 1; }
+
 echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing, reproducible"

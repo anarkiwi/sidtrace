@@ -35,7 +35,8 @@ your own and pass `--kernal/--basic/--chargen` if a tune needs them.
 ## Output
 
 CSV columns: `cycle,cycle_since_nmi,cycle_since_video_irq,cycle_since_cia_irq,chip,reg,value`.
-Unchanged writes are omitted. Full spec: [docs/csv-format.md](docs/csv-format.md).
+Unchanged writes are omitted. `-e SIDTRACE_INTERRUPTS=1` adds a row per
+interrupt raise (`value` = `nmi`, `video_irq` or `cia_irq`). Full spec: [docs/csv-format.md](docs/csv-format.md).
 
 Traces are **deterministic**: the simulated power-on delay is pinned (not
 randomized from wall-clock time), so a given tune renders to a byte-identical
