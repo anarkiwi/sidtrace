@@ -40,4 +40,17 @@ irq=$(echo "$out" | tail -n +2 | awk -F, '$3!="" || $4!=""' | grep -c . || true)
 cia=$(echo "$out" | grep -c ',0,,,cia_irq$' || true)
 [ "$cia" -gt 200 ] || { echo "FAIL: too few CIA interrupt rows ($cia)"; exit 1; }
 
-echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing, reproducible"
+# Every RTI is a row, and handler entries and RTIs nest: the depth never goes
+# negative and at most the handler running when the trace ends stays open.
+rti=$(echo "$out" | grep -c ',,,rti$' || true)
+[ "$rti" -gt 200 ] || { echo "FAIL: too few rti rows ($rti)"; exit 1; }
+echo "$out" | awk -F, 'NR > 1 && $5 == "" {
+        if ($7 ~ /_entry$/) d++; else if ($7 == "rti" && --d < 0) exit 1 }
+    END { exit d > 1 }' || { echo "FAIL: interrupt entries and rti rows do not nest"; exit 1; }
+
+# Each CIA raise is entered once.
+entries=$(echo "$out" | grep -c ',,,cia_irq_entry$' || true)
+[ $((cia - entries)) -le 1 ] && [ "$entries" -le "$cia" ] || {
+    echo "FAIL: $cia CIA raises but $entries CIA entries"; exit 1; }
+
+echo "PASS: $rows rows, volume logged once, $irq rows with IRQ timing, $rti nested rti rows, reproducible"

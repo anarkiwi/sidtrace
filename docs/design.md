@@ -35,7 +35,9 @@ CLI/config/public-API surface changes are needed.
 | Chip cycle clock | `src/c64/c64sid.h` | `EventScheduler::getTime(PHI1)`. |
 | NMI timestamp | `src/c64/c64.h` `interruptNMI()` | Record cycle when NMI raised. |
 | IRQ source split | `src/c64/c64env.h`, `c64cia.h`, `c64vic.h`, `c64.h` | `interruptIRQ()` gains an `irq_source_t` so VIC vs CIA IRQs are timed separately. |
-| Trace ownership / wiring | `src/c64/c64.cpp` | Creates the tracer from `$SIDTRACE`, attaches it to each SID with its chip index, clears interrupt history on reset. |
+| IRQ line cause | `src/c64/c64.h` `interruptIRQ()` | Tracks which IRQ sources assert the line, so an IRQ entry names the one that pulled it low. |
+| Handler entry / RTI | `src/c64/CPU/mos6510.cpp` `brkPushLowPC()`, `rti_instr()` | Logs the vector the CPU commits to and every RTI, so handler nesting can be rebuilt. |
+| Trace ownership / wiring | `src/c64/c64.cpp` | Creates the tracer from `$SIDTRACE`, attaches it to each SID with its chip index and to the CPU, clears interrupt history on reset. |
 | Build | `configure.ac`, `Makefile.am` | `PKG_CHECK_MODULES(libzstd)`, link `-lzstd`. |
 
 The tracer pointer is null unless `$SIDTRACE` is set, so an un-traced run keeps
