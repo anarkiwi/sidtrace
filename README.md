@@ -56,3 +56,4 @@ df = pd.read_csv("trace.csv.zst")
 - [docs/csv-format.md](docs/csv-format.md) — trace column reference.
 - [patches/](patches) — the upstream patches.
 - [tools/make_test_sid.py](tools/make_test_sid.py) — generates the CI smoke-test tune.
+- [tools/trace_hvsc.sh](tools/trace_hvsc.sh) — traces every HVSC subtune to its Songlengths length in parallel, writing `NAME.<subtune>.csv.zst` next to each tune.

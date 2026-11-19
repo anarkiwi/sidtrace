@@ -5,3 +5,5 @@ test.sid
 __pycache__/
 *.pyc
 .smoke/
+.run/
+.claude/worktrees/
