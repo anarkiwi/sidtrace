@@ -1,15 +1,15 @@
 #!/bin/sh
-# trace_hvsc.sh [HVSC_DIR=/scratch/datasets/hvsc] [JOBS=host CPUs]
+# trace_hvsc.sh [HVSC_DIR=/scratch/datasets/hvsc] [JOBS=host physical cores]
 #
 # Traces every HVSC subtune to its Songlengths length, in parallel inside one
-# sidtrace container (one worker per host CPU). Each trace is written next to its
+# sidtrace container (one worker per physical core). Each trace is written next to its
 # tune as NAME.<subtune>.csv.zst. Resumable; failures -> <repo>/.run/failed.log.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 hvsc=$(realpath "${1:-/scratch/datasets/hvsc}")
 [ -d "$hvsc/C64Music" ] && hvsc=$hvsc/C64Music
 run=$here/../.run
-jobs=${2:-$(docker info --format '{{.NCPU}}' 2>/dev/null || nproc)}
+jobs=${2:-$(lscpu -p=core,socket | grep -v "^#" | sort -u | wc -l)}
 mkdir -p "$run"
 
 python3 -I "$here/hvsc_jobs.py" "$hvsc" /hvsc >"$run/jobs.tsv"
